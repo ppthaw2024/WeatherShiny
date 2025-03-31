@@ -5,7 +5,7 @@ account: pwintphoothaw
 server: shinyapps.io
 hostUrl: https://api.shinyapps.io/v1
 appId: 14372493
-bundleId:
+bundleId: 10033229
 url: https://pwintphoothaw.shinyapps.io/WeatherShiny/
 version: 1
 asMultiple: FALSE
