@@ -1,3 +1,4 @@
+#Final Working Code
 # Load packages
 pacman::p_load(shiny, tidyverse, lubridate, tsibble, fable, feasts, fable.prophet, plotly, DT, zoo)
 
@@ -223,10 +224,116 @@ server <- function(input, output, session) {
   })
   
   # --- Tab 3: Forecasting ---
-  # Leave this as-is: your full forecast logic from your original code should follow here
-  # (unchanged, already implemented and working)
+  observeEvent(input$run_forecast, {
+    req(input$models)
+    
+    station_data <- weather_tsbl %>%
+      filter(Station == input$forecast_station) %>%
+      select(Date, value = all_of(input$forecast_var))
+    
+    train_n <- floor(nrow(station_data) * input$train_ratio)
+    train_ts <- as_tsibble(station_data[1:train_n, ], index = Date)
+    test_ts <- as_tsibble(station_data[(train_n + 1):nrow(station_data), ], index = Date)
+    full_ts <- as_tsibble(station_data, index = Date)
+    
+    models <- train_ts %>%
+      model(
+        STLNaive = decomposition_model(STL(value), NAIVE(season_adjust)),
+        STLArima = decomposition_model(STL(value), ARIMA(season_adjust)),
+        STLETS = decomposition_model(STL(value), ETS(season_adjust ~ season("N"))),
+        AUTOARIMA = ARIMA(value),
+        AUTOprophet = prophet(value),
+        AUTOETS = ETS(value)
+      ) %>% select(all_of(input$models))
+    
+    fc <- forecast(models, h = nrow(test_ts))
+    
+    output$forecast_plot <- renderPlotly({
+      title <- paste("Forecast Validation for", input$forecast_var, "of", input$forecast_station)
+      p <- autoplot(full_ts, value) +
+        autolayer(fc, level = NULL) +
+        labs(title = title, x = "Date", y = input$forecast_var) +
+        theme_minimal()
+      ggplotly(p)
+    })
+    
+    output$residual_plot <- renderPlot({
+      augment(models) %>%
+        filter(!is.na(.resid)) %>%
+        ggplot(aes(x = .resid)) +
+        geom_histogram(bins = 30, fill = "skyblue", color = "black") +
+        facet_wrap(~.model, scales = "free") +
+        theme_minimal()
+    })
+    
+    output$test_plot <- renderPlot({
+      autoplot(test_ts, value) +
+        autolayer(fc, level = NULL) +
+        labs(title = "Test Forecast vs Actual", x = "Date", y = input$forecast_var) +
+        theme_minimal()
+    })
+    
+    output$accuracy_tbl <- renderDT({
+      accuracy(fc, test_ts) %>% select(.model, RMSE, MAE, MAPE)
+    })
+    
+    output$residual_title <- renderUI(h4("Residual Plot"))
+    output$test_title <- renderUI(h4("Test Forecast vs Actual"))
+    output$accuracy_title <- renderUI(h4("Forecast Accuracy"))
+  })
   
+  # Future Forecast
+  observeEvent(input$run_future, {
+    req(input$full_models)
+    
+    period_unit <- isolate(input$horizon_unit)
+    
+    raw_data <- weather_tsbl %>% filter(Station == input$full_station)
+    
+    if (input$full_var == "Mean Temperature (°C)" && period_unit %in% c("week", "month")) {
+      full_ts <- raw_data %>%
+        mutate(period = floor_date(Date, unit = period_unit)) %>%
+        index_by(period) %>%
+        summarise(value = mean(`Mean Temperature (°C)`, na.rm = TRUE), .groups = "drop") %>%
+        rename(Date = period)
+    } else if (input$full_var == "Daily Rainfall Total (mm)" && period_unit %in% c("week", "month")) {
+      full_ts <- raw_data %>%
+        mutate(period = floor_date(Date, unit = period_unit)) %>%
+        index_by(period) %>%
+        summarise(value = sum(`Daily Rainfall Total (mm)`, na.rm = TRUE), .groups = "drop") %>%
+        rename(Date = period)
+    } else {
+      full_ts <- raw_data %>% select(Date, value = all_of(input$full_var))
+    }
+    
+    full_ts <- as_tsibble(full_ts, index = Date)
+    
+    models <- full_ts %>%
+      model(
+        STLNaive = decomposition_model(STL(value), NAIVE(season_adjust)),
+        STLArima = decomposition_model(STL(value), ARIMA(season_adjust)),
+        STLETS = decomposition_model(STL(value), ETS(season_adjust ~ season("N"))),
+        AUTOARIMA = ARIMA(value),
+        AUTOprophet = prophet(value),
+        AUTOETS = ETS(value)
+      ) %>% select(all_of(input$full_models))
+    
+    horizon_str <- paste0(input$full_horizon, " ", period_unit)
+    fc <- forecast(models, h = horizon_str)
+    
+    output$future_forecast_plot <- renderPlotly({
+      title <- paste("Future Forecast for", input$full_var, "of", input$full_station)
+      p <- autoplot(fc, level = 95) +
+        labs(title = title, x = "Date", y = input$full_var) +
+        theme_minimal()
+      ggplotly(p, tooltip = c("x", "y", ".model"))
+    })
+  })
 }
+
+
 
 # Run the app
 shinyApp(ui = ui, server = server)
+
+
